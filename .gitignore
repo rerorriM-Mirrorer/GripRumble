@@ -1,0 +1,13 @@
+# Runtime / user state
+SDL3.dll
+events.txt
+bridge.log
+launcher.log
+diagnostics.log
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Windower per-character saved settings
+data/
