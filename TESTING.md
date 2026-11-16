@@ -1,6 +1,28 @@
 # GripRumble TESTING.md
 
-## Current Development Status - November 16, 2026 (America/Chicago)
+## Current Development Status - November 16, 2026, later (America/Chicago)
+
+- **Repository / branch:** `rerorriM-Mirrorer/GripRumble`. `main` now holds 0.1.22 (`b598d9d`), promoted as known good on the user's live report. Working branch `development/0.1.23-follow-tempo` builds on it.
+- **Runtime / companion:** unchanged from 0.1.22 (Windower 4, Python 3 / SDL3 3.2.28 x64 helper, XIVCrossbar `feat/rumble-events-20261115`).
+- **Source baseline:** `b598d9d` (0.1.22).
+- **Current change (0.1.23):** `follow_far_on` loop `[(3000,9000,80),(0,0,920)]` (1 s); `follow_lost_on` loop `[(12000,18000,90),(0,0,110),(12000,18000,90),(0,0,210)]` (0.5 s); follow poll 0.25 s; all-clear settle 0.5 s (far/lost settle stays 1.5 s); new `//grip hush` and `//grip distance hush`.
+- **Recent user-confirmed live behavior:** 0.1.22 "working well" in game, including the follow distance feature; user asked for the faster tempo and quicker all-clear now in 0.1.23.
+- **Verification:** `luatex --luaonly tests/mock_grip.lua .` PASS (adds hush and 1 s all-clear checks); `python -I tests/check_helper.py` PASS (1 s / 0.5 s cycles); `python -m py_compile bridge.py launch_hidden.py` PASS; `git diff --check` PASS. Not run in Windows, Windower or FFXI.
+- **Next live tests:** restart the helper (waveforms changed). `//grip distance test` for the new tempo. Walk away: tug every second past the distance, quick double knock out of sight. Walk back: rumble stops and ticks within about a second. While rumbling, `//grip hush`: silent at once, `//grip status` shows `hushed`; after everyone is back and someone leaves again, it rumbles again. Hush a far alert, then let them drop out of sight: the knock should come through.
+
+---
+
+## November 16, 2026 - Follow tempo and hush, test batch 0.1.23
+
+- **Live report on 0.1.22:** Working well. Requests: far tug about every second, lost double knock every half second, back in range within 1 s, and a quick way to stop distance rumbles until the next trigger. Push 0.1.22 to `main` as known good.
+- **Publication:** `main` fast-forwarded to `b598d9d` (0.1.22, unchanged code) and `development/0.1.22-crossbar-follow` pushed. 0.1.23 pushed on its own development branch; not on `main`.
+- **Interpretation of "until next trigger":** hush lasts until everyone is back within the distance (the all-clear), so the next time someone falls behind is a new trigger. A worse state than the one hushed (far to out of sight) also counts as a new trigger. Hush is not saved and clears on zoning, cutscenes and turning the watch off.
+- **Files:** `GripRumble.lua`, `bridge.py`, `tests/mock_grip.lua`, `tests/check_helper.py`, `README.md`, `TESTING.md`.
+- **Install:** full ZIP. Stop the helper, extract over `addons/GripRumble/`, start the helper, `//lua r GripRumble`.
+
+---
+
+## Earlier status (0.1.22 batch, kept for history)
 
 - **Repository / branch:** `rerorriM-Mirrorer/GripRumble`, local working branch `development/0.1.22-crossbar-follow`, based on the published `development/0.1.21-chat-style` head `1b7ab06`. **Not pushed:** push access was not granted in this session. The testing ZIP matches the local branch head given in the handoff.
 - **Runtime / companion:** Windower 4 Lua addon plus Windows Python 3 / SDL3 3.2.28 x64 helper. Companion: XIVCrossbar local branch `feat/rumble-events-20261115` (commit `a766b6e`), which sends `slotpress`, `triggerpull`, `setswitch` and `binding` into `events.txt`, each saved per character in XIVCrossbar and OFF by default there.

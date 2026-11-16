@@ -52,14 +52,14 @@ HEARTBEAT_PATTERN = [(2500, 6500, 110), (0, 0, 170),
                      (2500, 6500, 140), (0, 0, 580)]
 
 # Party follow watch (0.1.22). The addon decides the state; these only say
-# how each state feels. "far" is one soft tug every 2 seconds; "lost" (same
+# how each state feels. "far" is one soft tug every second; "lost" (same
 # zone, beyond the game's ~50-yalm sight range) is a firmer double knock
-# every 1.5 seconds. Both are deliberately unlike the 1-second chain
-# heartbeat. FOLLOW_TIMEOUT stops a follow loop the addon stopped refreshing
+# every half second (0.1.23 tempo, user-requested). far shares the chain
+# heartbeat's 1-second tempo but is a single lighter tug, not a lub-dub. FOLLOW_TIMEOUT stops a follow loop the addon stopped refreshing
 # (for example if FFXI closed without unloading GripRumble).
-FOLLOW_FAR_PATTERN = [(3000, 9000, 80), (0, 0, 1920)]
+FOLLOW_FAR_PATTERN = [(3000, 9000, 80), (0, 0, 920)]
 FOLLOW_LOST_PATTERN = [(12000, 18000, 90), (0, 0, 110),
-                       (12000, 18000, 90), (0, 0, 1210)]
+                       (12000, 18000, 90), (0, 0, 210)]
 FOLLOW_TIMEOUT = 30
 
 EXTRA_CUES = {

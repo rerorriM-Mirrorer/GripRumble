@@ -44,7 +44,7 @@ assert sum(ms for *_, ms in trigger) < sum(ms for *_, ms in slot)
 assert cues[b'setswitch'] == [(0, 10000, 35)] and cues[b'binding'] == [(0,12000,35),(0,0,65),(3500,15000,45)], 'set/binding unchanged'
 assert trigger[0][0] > trigger[0][1] and cues[b'setswitch'][0][0] == 0, 'trigger low motor vs setswitch high motor'
 far, lost = values['FOLLOW_FAR_PATTERN'], values['FOLLOW_LOST_PATTERN']
-assert sum(ms for *_, ms in far) == 2000 and sum(ms for *_, ms in lost) == 1500
+assert sum(ms for *_, ms in far) == 1000 and sum(ms for *_, ms in lost) == 500, '0.1.23 tempo'
 assert max(hi for _, hi, _ in lost) > max(hi for _, hi, _ in far), 'lost stronger than far'
 
 # Simulate run_bridge with a fake clock, file and motor; no SDL is loaded.

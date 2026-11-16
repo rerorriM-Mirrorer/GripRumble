@@ -1,5 +1,5 @@
 _addon.name = 'GripRumble'
-_addon.version = '0.1.22'
+_addon.version = '0.1.23'
 _addon.commands = {'griprumble', 'grip'}
 
 local config = require('config')
@@ -269,15 +269,24 @@ end
 -- that but farther than your chosen distance is 'far'.
 local FOLLOW_LOST_YALMS = 49.5
 local FOLLOW_HYSTERESIS = 2     -- must come this much closer to clear 'far'
-local FOLLOW_SETTLE = 1.5       -- seconds a new state must hold before it rumbles
+local FOLLOW_SETTLE = 1.5       -- seconds a far/lost state must hold before it rumbles
+local FOLLOW_CLEAR_SETTLE = 0.5 -- seconds 'everyone back' must hold (0.1.23: clears within 1 s)
 local FOLLOW_REFRESH = 10       -- re-send an active state so the helper keeps it
 local FOLLOW_ZONE_GRACE = 10    -- seconds after zoning while everyone loads in
-local FOLLOW_POLL = 0.5
+local FOLLOW_POLL = 0.25
 local follow_state = 'ok'       -- what is currently rumbling: ok, far or lost
 local follow_candidate, follow_candidate_since = 'ok', 0
 local follow_flagged = {}       -- member name -> true while beyond the distance
 local follow_next_poll, follow_next_refresh = 0, 0
 local follow_quiet_until = 0
+-- //grip hush silences the current level until everyone is back in range.
+-- It holds the rank that was rumbling: hushing 'far' still lets 'lost'
+-- through, hushing 'lost' silences both. 0 means nothing is hushed.
+local FOLLOW_RANK = {ok = 0, far = 1, lost = 2}
+local follow_hushed = 0
+local function follow_audible(state)
+    return FOLLOW_RANK[state] > follow_hushed
+end
 
 -- Read one member's situation: 'ok', 'far', 'lost', or nil when the member
 -- is not in your zone (zoned elsewhere, offline) and so is not watched.
@@ -298,6 +307,7 @@ end
 
 -- Stop any follow rumble. quietly skips the all-clear tick (used for off,
 -- zoning, cutscenes and unload, where nobody actually caught up).
+-- The all-clear tick still plays after a hush: it tells you they caught up.
 local function follow_stop(quietly)
     if follow_state ~= 'ok' then
         emit('follow_off')
@@ -306,6 +316,7 @@ local function follow_stop(quietly)
     follow_state = 'ok'
     follow_candidate = 'ok'
     follow_flagged = {}
+    follow_hushed = 0
 end
 
 local function follow_poll(now)
@@ -335,16 +346,19 @@ local function follow_poll(now)
     if worst ~= follow_candidate then
         follow_candidate, follow_candidate_since = worst, now
     end
-    if follow_candidate ~= follow_state and now - follow_candidate_since >= FOLLOW_SETTLE then
+    local settle = follow_candidate == 'ok' and FOLLOW_CLEAR_SETTLE or FOLLOW_SETTLE
+    if follow_candidate ~= follow_state and now - follow_candidate_since >= settle then
         if follow_candidate == 'ok' then
             follow_stop(false)
         else
             follow_state = follow_candidate
-            emit(follow_cue(follow_state))
-            follow_next_refresh = now + FOLLOW_REFRESH
+            if follow_audible(follow_state) then
+                emit(follow_cue(follow_state))
+                follow_next_refresh = now + FOLLOW_REFRESH
+            end
             if verbose then chat('Follow: ' .. follow_state .. '.') end
         end
-    elseif follow_state ~= 'ok' and now >= follow_next_refresh then
+    elseif follow_state ~= 'ok' and follow_audible(follow_state) and now >= follow_next_refresh then
         emit(follow_cue(follow_state))
         follow_next_refresh = now + FOLLOW_REFRESH
     end
@@ -356,6 +370,7 @@ local function reset()
     casting = false
     -- The helper's 'reset' clears every loop, follow included.
     follow_state, follow_candidate, follow_flagged = 'ok', 'ok', {}
+    follow_hushed = 0
     follow_quiet_until = os.clock() + FOLLOW_ZONE_GRACE
     emit('reset')
 end
@@ -524,7 +539,8 @@ end)
 
 local function follow_description()
     if follow_distance == 0 then return 'OFF' end
-    return ('%d yalms (%s)'):format(follow_distance, follow_state)
+    local hushed = follow_state ~= 'ok' and not follow_audible(follow_state)
+    return ('%d yalms (%s%s)'):format(follow_distance, follow_state, hushed and ', hushed' or '')
 end
 
 local function show_status()
@@ -551,6 +567,7 @@ local function show_help()
     chat_command('setswitch [on|off]', 'Save XB set-change cue on/off; bare previews it.')
     chat_command('binding [on|off]', 'Save XB binding cue on/off; bare previews it.')
     chat_command('distance [on|off|5-50|test|check]', 'Party follow rumble (saved; bare toggles).')
+    chat_command('hush', 'Silence follow rumble until everyone is back in range.')
     chat_command('reject [on|off|test]', 'Failed-action buzzer (default OFF).')
     chat_command('tp [on|off]', 'TP threshold cues (default OFF).')
     chat_command('chain [steady|heartbeat|off]', 'Save skillchain feedback per character; 60 BPM heartbeat.')
@@ -641,6 +658,22 @@ local function follow_check()
     if not any then chat('No party members to watch.') end
 end
 
+-- //grip hush (also //grip distance hush): a quick, unsaved snooze for the
+-- current alert. The watch keeps running and re-arms once everyone is back.
+local function follow_hush()
+    if follow_distance == 0 then
+        chat('Follow distance rumble is OFF.')
+    elseif follow_state == 'ok' or not follow_audible(follow_state) then
+        chat('No follow rumble to hush.')
+    else
+        follow_hushed = FOLLOW_RANK[follow_state]
+        emit('follow_off')
+        chat(follow_state == 'far'
+            and 'Follow hushed until everyone is back; out of sight still rumbles.'
+            or 'Follow hushed until everyone is back in range.')
+    end
+end
+
 local function handle_distance(option)
     local yalms = tonumber(option)
     if not option then
@@ -654,6 +687,8 @@ local function handle_distance(option)
         chat('Follow preview sent: far tug, out-of-sight knock, then all clear.')
     elseif option == 'check' then
         follow_check()
+    elseif option == 'hush' then
+        follow_hush()
     elseif valid_distance(yalms) then
         set_follow(yalms)
     else
@@ -683,6 +718,8 @@ windower.register_event('addon command', function(cue, option)
         handle_xb_cue(cue, option)
     elseif cue == 'distance' then
         handle_distance(option)
+    elseif cue == 'hush' then
+        follow_hush()
     elseif cue == 'reject' then
         if option == 'test' then
             emit('reject')
