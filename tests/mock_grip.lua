@@ -3,13 +3,18 @@
 local root = assert(arg[1], 'addon directory required')
 package.path = root .. '/?.lua;' .. package.path
 local saved_chain_mode, save_count = nil, 0
+local saved_follow, saved_follow_last = nil, nil
 package.preload['config'] = function()
     return {
         load = function(defaults)
-            return {chain_mode = saved_chain_mode or defaults.chain_mode}
+            -- Windower config returns XML text; strings check the number parsing.
+            return {chain_mode = saved_chain_mode or defaults.chain_mode,
+                follow_distance = saved_follow and tostring(saved_follow) or defaults.follow_distance,
+                follow_last = saved_follow_last and tostring(saved_follow_last) or defaults.follow_last}
         end,
         save = function(values)
             saved_chain_mode = values.chain_mode
+            saved_follow, saved_follow_last = values.follow_distance, values.follow_last
             save_count = save_count + 1
         end,
     }
@@ -44,6 +49,8 @@ local mobs = {
     [500] = {id=500,spawn_type=16,hpp=100,name='Enemy C'},
 }
 local party_member = {mob={id=8,hpp=80},hpp=80}
+local party = {p1=party_member}
+local game_info = {zone=230, mog_house=false}
 windower = {
     addon_path = root .. '/',
     file_exists = function() return true end,
@@ -52,7 +59,8 @@ windower = {
     add_to_chat = function(mode,line) chats[#chats+1]=line; chat_modes[#chat_modes+1]=mode end,
     ffxi = {
         get_player = function() return me end,
-        get_party = function() return {p1=party_member} end,
+        get_party = function() return party end,
+        get_info = function() return game_info end,
         get_mob_by_id = function(id) return mobs[id] end,
         get_mob_by_target = function(slot)
             if slot=='t' then return mobs[selected] end
@@ -91,10 +99,10 @@ os.remove(root .. '/events.txt')
 registered['load']()
 local auto_xb_sync = false
 for _, task in ipairs(scheduled) do
-    if task.delay == 1.0 then task.fn(); auto_xb_sync = true end
+    if task.delay == 1.0 then auto_xb_sync = true end
 end
-assert(auto_xb_sync, 'load schedules XB sync')
-eq(sent[#sent], 'lua c xivcrossbar slotrumble on', 'automatic XB enable')
+assert(not auto_xb_sync, '0.1.22: no scheduled XB sync at load')
+eq(#sent, 0, '0.1.22: load sends XIVCrossbar nothing; its saved cue settings stand')
 registered['addon command']('help')
 local help = table.concat(chats, '\n')
 assert(help:find('<color:140>--------------------------------------------------</color>',1,true), 'divider uses 140')
@@ -235,5 +243,106 @@ assert(chats[#chats-2]:find('Chain: heartbeat',1,true), 'heartbeat survives relo
 registered['addon command']('chain','steady')
 eq(saved_chain_mode,'steady','saved steady after reload')
 assert(save_count >= 5, 'every explicit chain change is saved')
-print('PASS simulated GripRumble: reload persistence, XB sync/defaults, reject, TP toggle, skillchain rhythm, avatar removal, pet damage, critical self/party')
+
+-- 0.1.22 XIVCrossbar cue commands: bare/test preview, on/off forwarded once.
+local sent_before = #sent
+registered['addon command']('triggerpull')
+eq(count(cues(),'triggerpull'),1,'bare triggerpull previews')
+eq(#sent, sent_before, 'preview sends no XB command')
+registered['addon command']('triggerpull','on')
+eq(sent[#sent],'lua c xivcrossbar rumble trigger on','trigger on forwarded')
+registered['addon command']('setswitch')
+eq(count(cues(),'setswitch'),1,'bare setswitch still previews')
+registered['addon command']('setswitch','off')
+eq(sent[#sent],'lua c xivcrossbar rumble set off','set off forwarded')
+registered['addon command']('binding','test')
+eq(count(cues(),'binding'),1,'binding test previews')
+registered['addon command']('binding','on')
+eq(sent[#sent],'lua c xivcrossbar rumble bind on','bind on forwarded')
+registered['addon command']('binding','sideways')
+assert(chats[#chats]:find('binding [on|off|test]',1,true), 'xb cue usage')
+registered['addon command']('slotpress','off')
+eq(sent[#sent],'lua c xivcrossbar slotrumble off','slot override still this-load only')
+
+-- 0.1.22 follow distance.
+local function mob_at(yalms) return {id=8,hpp=80,distance=yalms*yalms} end
+local function step(seconds)
+    -- Advance the clock in poll-sized steps so settle timing is exercised.
+    local target = times + seconds
+    while times < target do times = times + 0.5; registered['prerender']() end
+end
+selected = nil
+party_member.name, party_member.zone, party_member.mob = 'Myrr', 230, mob_at(10)
+registered['addon command']('status')
+assert(chats[#chats]:find('Follow distance: OFF',1,true), 'follow defaults off')
+step(30)
+eq(count(cues(),'follow_far_on') + count(cues(),'follow_lost_on'),0,'off watches nothing')
+registered['addon command']('distance','99')
+assert(chats[#chats]:find('distance [on|off|5-50|test|check]',1,true), 'out of range usage')
+registered['addon command']('distance')
+eq(saved_follow,30,'bare toggles on at default 30 and saves')
+step(12) -- load/zone grace already over; settle
+eq(count(cues(),'follow_far_on'),0,'10 yalms is fine')
+party_member.mob = mob_at(35)
+step(1)
+eq(count(cues(),'follow_far_on'),0,'far must settle 1.5 s')
+step(1)
+eq(count(cues(),'follow_far_on'),1,'35 yalms is far')
+party_member.mob = mob_at(29)
+step(3)
+eq(count(cues(),'follow_off'),0,'hysteresis: 29 yalms still far')
+step(8)
+eq(count(cues(),'follow_far_on'),2,'far state refreshed for helper timeout')
+party_member.mob = nil
+step(2)
+eq(count(cues(),'follow_lost_on'),1,'same zone with no position is lost')
+party_member.mob = mob_at(52)
+step(3)
+eq(count(cues(),'follow_lost_on'),1,'stale 52-yalm position stays lost without restarting')
+party_member.mob = mob_at(5)
+step(2)
+eq(count(cues(),'follow_off'),1,'back in range stops loop')
+eq(count(cues(),'follow_ok'),1,'all-clear tick')
+party_member.zone, party_member.mob = 231, nil
+step(4)
+eq(count(cues(),'follow_lost_on'),1,'other zone is not watched')
+party_member.zone = 230
+step(2)
+eq(count(cues(),'follow_lost_on'),2,'same zone again, no position: lost')
+registered['zone change']()
+local lost_before = count(cues(),'follow_lost_on')
+step(9)
+eq(count(cues(),'follow_lost_on'),lost_before,'zone grace keeps quiet')
+step(3)
+eq(count(cues(),'follow_lost_on'),lost_before+1,'judges again after grace')
+me.status = 4
+step(1)
+eq(count(cues(),'follow_off'),2,'cutscene stops follow quietly')
+eq(count(cues(),'follow_ok'),1,'no all-clear for a cutscene')
+me.status = 0
+step(2)
+registered['addon command']('distance','check')
+assert(chats[#chats]:find('Myrr: same zone, no position - lost',1,true), 'check reports lost member')
+party_member.mob = mob_at(40)
+registered['addon command']('distance','check')
+assert(chats[#chats]:find('Myrr: 40.0 yalms - far',1,true), 'check reports distance')
+registered['addon command']('distance','45')
+eq(saved_follow,45,'numeric distance saved')
+registered['addon command']('distance','off')
+eq(saved_follow,0,'off saved')
+eq(saved_follow_last,45,'last distance remembered')
+registered['addon command']('distance','on')
+eq(saved_follow,45,'on restores last distance')
+registered['addon command']('distance','0')
+eq(saved_follow,0,'0 is off')
+registered['addon command']('distance','test')
+eq(count(cues(),'follow_preview'),1,'preview')
+registered['addon command']('distance','25')
+assert(loadfile(root .. '/GripRumble.lua'))()
+registered['addon command']('status')
+assert(chats[#chats]:find('Follow distance: 25 yalms',1,true), 'distance survives reload')
+assert(chats[#chats-2]:find('Slot: XB saved',1,true), 'slot override is per load')
+registered['addon command']('help')
+assert(table.concat(chats,'\n'):find('<color:207> distance [on|off|5-50|test|check]</color>',1,true), 'distance help')
+print('PASS simulated GripRumble: reload persistence, no XB load sync, XB cue forwarding, follow distance, reject, TP toggle, skillchain rhythm, pet damage, critical self/party')
 os.remove(root .. '/events.txt')

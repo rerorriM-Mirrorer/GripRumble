@@ -1,5 +1,36 @@
 # GripRumble TESTING.md
 
+## Current Development Status - November 16, 2026 (America/Chicago)
+
+- **Repository / branch:** `rerorriM-Mirrorer/GripRumble`, local working branch `development/0.1.22-crossbar-follow`, based on the published `development/0.1.21-chat-style` head `1b7ab06`. **Not pushed:** push access was not granted in this session. The testing ZIP matches the local branch head given in the handoff.
+- **Runtime / companion:** Windower 4 Lua addon plus Windows Python 3 / SDL3 3.2.28 x64 helper. Companion: XIVCrossbar local branch `feat/rumble-events-20261115` (commit `a766b6e`), which sends `slotpress`, `triggerpull`, `setswitch` and `binding` into `events.txt`, each saved per character in XIVCrossbar and OFF by default there.
+- **Source baseline:** User's installed snapshot `GripRumble-2026-11-16.zip`; its code (`GripRumble.lua`, `bridge.py`, `chain_skills.lua`, tests, launchers) is byte-identical to `1b7ab06`. Its bundled `SDL3.dll` SHA-256 `55f17c87...0d82` matches `docs/DEPENDENCIES.md`.
+- **Current change (0.1.22):** `triggerpull` waveform; `//grip triggerpull|setswitch|binding [on|off|test]`; no XIVCrossbar command at load (slot override now only on `//grip slotpress on|off`); saved `//grip distance [on|off|5-50|test|check]` follow watch with far/lost loops and all-clear tick; helper follow-loop timeout and truncated-file recovery. `slotpress`, `setswitch`, `binding` and every other existing waveform unchanged.
+- **Recent user-confirmed live behavior:** User reports all current GripRumble rumbles working well, including slotpress. XIVCrossbar `//xb rumble all on` worked and slot rumble stayed on after reloading XIVCrossbar alone (reported in the XIVCrossbar handoff). Nothing in 0.1.22 has been tested in game.
+- **Verification:** `luatex --luaonly tests/mock_grip.lua .` PASS (LuaTeX Lua 5.4 simulation, not Windower Lua 5.1); `python -I tests/check_helper.py` PASS (now also runs `run_bridge` against a fake clock, file and motor: follow refresh keeps rhythm, 30 s timeout, truncated file, triggerpull lighter than slotpress); `python -m py_compile bridge.py launch_hidden.py` PASS; `git diff --check` PASS. No Windows helper, USB DualSense, Windower or FFXI run.
+- **Next live tests:** see the November 16 entry below.
+
+---
+
+## November 16, 2026 - XIVCrossbar cues and follow distance, test batch 0.1.22
+
+- **Request:** Rumble patterns for XIVCrossbar's new cues (handoff `griprumble-handoff-2026-11-15.md`), GripRumble-side settings for them, and a continuing rumble when a party member in the same zone is beyond a chosen distance or out of sight, with `//grip distance <yalms>`, `0`/`off` off, bare toggle, and possibly a lighter level past the distance and a stronger one out of sight. All files for a fresh install.
+- **Handoff decisions taken:** (1) The load-time `slotrumble on` sync is removed; it overrode a slot cue saved OFF in XIVCrossbar. (2) New cues are never auto-synced; `//grip <cue> on|off` forwards one `//xb rumble` command only when typed, from that client, so clients never write XIVCrossbar's shared settings together at load. (3) Per-cue switches live in XIVCrossbar; GripRumble only forwards. (4) Per-trigger detail (`triggerpull:l2`) left for a later XIVCrossbar change.
+- **Waveforms (all suggestions, untested by feel):** `triggerpull` `[(9000,4000,30)]` - low motor, below slotpress's 38000/47000 and shorter than its 135 ms, on the opposite motor from `setswitch`'s high-motor tick. `follow_far_on` loop `[(3000,9000,80),(0,0,1920)]` (2 s). `follow_lost_on` loop `[(12000,18000,90),(0,0,110),(12000,18000,90),(0,0,1210)]` (1.5 s). `follow_ok` `[(0,6000,60),(0,3000,60)]`. `follow_preview` joins them for `//grip distance test`.
+- **Follow rules:** party p1-p5 in your zone only; lost = no Windower mob/position or at least 49.5 yalms (FFXI's 50-yalm draw/update cap leaves stale positions beyond it); far = beyond the distance; clear 2 yalms inside it; 1.5 s settle; strongest member state wins; re-sent every 10 s while active (helper stops a loop after 30 s without one); quiet in cutscenes (status 4), Mog House and for 10 s after load, zoning or logout.
+- **Files:** `GripRumble.lua`, `bridge.py`, `tests/mock_grip.lua`, `tests/check_helper.py`, `README.md`, `TESTING.md`. `chain_skills.lua`, launchers, `SDL3.dll`, WORKFLOW, AGENTS, PACKETS, DEPENDENCIES unchanged.
+- **Install:** Full install ZIP. Stop the helper (`//grip shutdown` or close it), extract over `addons/GripRumble/`, start the helper, `//lua r GripRumble`. The ZIP ships no `data/settings.xml`, `events.txt` or logs, so saved chain settings and history are kept.
+- **Live test requests:**
+  1. `//grip status`: third line shows `Follow distance: OFF`. Slot shows `XB saved`.
+  2. `//xb rumble` to see XIVCrossbar's saved cues, then `//grip triggerpull on`; pull L2/R2 and change shoulder banks. Does the detent feel distinct from slotpress, and is it light enough when followed by a slot knock? `//grip setswitch` and `//grip binding` previews next to it.
+  3. `//lua r GripRumble` with XIVCrossbar slot cue saved OFF: slot presses should stay silent (previously GripRumble turned them on).
+  4. `//grip distance test`, then `//grip distance 30`. Walk away from a follower: soft tug past 30; double knock once they drop out of sight; one soft tick when they catch up. Use `//grip distance check` at each stage and note the reported yalms, especially the last number seen before `no position`.
+  5. Zone with followers; no rumble for about 10 s, then only if someone is left behind in the zone. Cutscene: no rumble. `//grip distance off` stops it at once.
+  6. Reload GripRumble: distance setting is kept. Regression: slotpress, cast/land/interrupt, damage cues unchanged.
+- **Open questions:** Whether Windower drops a distant member's `mob` entry or keeps a stale one, and the exact last-seen distance in crowded zones (the server may stop updating some characters earlier). `check` output answers both.
+
+---
+
 ## Current Development Status - November 14, 2026 (America/Chicago)
 
 - **Repository / branch:** `rerorriM-Mirrorer/GripRumble` / `development/0.1.21-chat-style`. The repository was empty before this publication. `main` contains only the bootstrap README; the unverified 0.1.21 source remains on the development branch.

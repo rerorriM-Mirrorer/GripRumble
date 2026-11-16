@@ -1,22 +1,38 @@
 _addon.name = 'GripRumble'
-_addon.version = '0.1.21'
+_addon.version = '0.1.22'
 _addon.commands = {'griprumble', 'grip'}
 
 local config = require('config')
 -- Windower chat helpers install string.color(). Use chat mode 0 so every
 -- message uses explicit segment colors rather than one color for the line.
 require('chat')
--- Only chain rhythm is persisted for now. Other haptic switches retain their
--- established per-load defaults, including the user-approved slotpress tap.
-local persistent_defaults = {chain_mode = 'steady'}
+-- Chain rhythm and the follow distance are saved per character. Other haptic
+-- switches keep their established per-load defaults.
+-- follow_distance 0 means the follow watch is off; follow_last remembers the
+-- distance that a bare //grip distance or //grip distance on turns back on.
+local FOLLOW_MIN, FOLLOW_MAX, FOLLOW_DEFAULT = 5, 50, 30
+local persistent_defaults = {chain_mode = 'steady', follow_distance = 0, follow_last = FOLLOW_DEFAULT}
 local persistent = config.load(persistent_defaults)
 local chain_mode = (persistent.chain_mode == 'off'
     or persistent.chain_mode == 'heartbeat'
     or persistent.chain_mode == 'steady') and persistent.chain_mode or 'steady'
 
+-- Saved values arrive from XML; accept only whole numbers in range.
+local function valid_distance(value)
+    value = tonumber(value)
+    if value and value >= FOLLOW_MIN and value <= FOLLOW_MAX and value == math.floor(value) then
+        return value
+    end
+    return nil
+end
+local follow_distance = valid_distance(persistent.follow_distance) or 0
+local follow_last = valid_distance(persistent.follow_last) or FOLLOW_DEFAULT
+
 local verbose = false
--- Per-load settings. Slot press is the user-confirmed known-good pattern.
-local slotpress_enabled = true
+-- Per-load settings. XIVCrossbar now saves its own slot cue setting, so
+-- GripRumble no longer forces it at load. slot_override is nil until
+-- //grip slotpress on|off sends XIVCrossbar a this-load-only override.
+local slot_override = nil
 local reject_enabled = false
 local tp_threshold_enabled = false
 local critical_enabled = true
@@ -60,16 +76,20 @@ local function deals_damage(result)
         or english:find('hp drained from', 1, true) ~= nil
 end
 
--- XIVCrossbar's optional test hook writes directly to events.txt, so enable/disable
--- its producer rather than attempting to filter only GripRumble's Lua emitter.
--- No changes to XIVCrossbar or its public defaults are required.
-local function sync_xivcrossbar_slotpress()
-    local xb_source = folder .. '../xivcrossbar/xivcrossbar.lua'
-    if windower.file_exists(xb_source) then
-        windower.send_command('lua c xivcrossbar slotrumble ' .. (slotpress_enabled and 'on' or 'off'))
-        return true
-    end
-    return false
+-- XIVCrossbar writes its cues straight into events.txt, so on/off lives in
+-- XIVCrossbar: GripRumble can only ask it to change. Changed in 0.1.22:
+-- nothing is sent at load any more. XIVCrossbar keeps its own saved
+-- per-character cue settings (//xb rumble), and the old load-time
+-- 'slotrumble on' re-enabled the slot cue even when it was saved OFF.
+-- Commands are sent only when you type a //grip command, from this client.
+local function xivcrossbar_installed()
+    return windower.file_exists(folder .. '../xivcrossbar/xivcrossbar.lua')
+end
+
+local function send_xivcrossbar(command)
+    if not xivcrossbar_installed() then return false end
+    windower.send_command('lua c xivcrossbar ' .. command)
+    return true
 end
 
 local function emit(cue)
@@ -241,10 +261,102 @@ local function track_weaponskill(action, player)
     end
 end
 
+-- Party follow watch -------------------------------------------------------
+-- FFXI only draws and updates characters within about 50 yalms. A party
+-- member in your zone but beyond that has no live position: Windower either
+-- has no mob entry for them or keeps their last, stale position, which
+-- reads 50 or more yalms away. Both count as 'lost'. A member closer than
+-- that but farther than your chosen distance is 'far'.
+local FOLLOW_LOST_YALMS = 49.5
+local FOLLOW_HYSTERESIS = 2     -- must come this much closer to clear 'far'
+local FOLLOW_SETTLE = 1.5       -- seconds a new state must hold before it rumbles
+local FOLLOW_REFRESH = 10       -- re-send an active state so the helper keeps it
+local FOLLOW_ZONE_GRACE = 10    -- seconds after zoning while everyone loads in
+local FOLLOW_POLL = 0.5
+local follow_state = 'ok'       -- what is currently rumbling: ok, far or lost
+local follow_candidate, follow_candidate_since = 'ok', 0
+local follow_flagged = {}       -- member name -> true while beyond the distance
+local follow_next_poll, follow_next_refresh = 0, 0
+local follow_quiet_until = 0
+
+-- Read one member's situation: 'ok', 'far', 'lost', or nil when the member
+-- is not in your zone (zoned elsewhere, offline) and so is not watched.
+local function member_follow_state(member, zone, threshold, was_flagged)
+    if not member or member.zone ~= zone then return nil end
+    local mob = member.mob
+    if not mob or type(mob.distance) ~= 'number' then return 'lost', nil end
+    local yalms = math.sqrt(mob.distance) -- Windower reports distance squared.
+    if yalms >= FOLLOW_LOST_YALMS then return 'lost', yalms end
+    local limit = was_flagged and threshold - FOLLOW_HYSTERESIS or threshold
+    if yalms > limit then return 'far', yalms end
+    return 'ok', yalms
+end
+
+local function follow_cue(state)
+    return state == 'lost' and 'follow_lost_on' or 'follow_far_on'
+end
+
+-- Stop any follow rumble. quietly skips the all-clear tick (used for off,
+-- zoning, cutscenes and unload, where nobody actually caught up).
+local function follow_stop(quietly)
+    if follow_state ~= 'ok' then
+        emit('follow_off')
+        if not quietly then emit('follow_ok') end
+    end
+    follow_state = 'ok'
+    follow_candidate = 'ok'
+    follow_flagged = {}
+end
+
+local function follow_poll(now)
+    if follow_distance == 0 then return end
+    if now < follow_next_poll then return end
+    follow_next_poll = now + FOLLOW_POLL
+    local player = windower.ffxi.get_player()
+    local info = windower.ffxi.get_info()
+    -- Status 4 is an event or cutscene; members are often hidden then.
+    if not player or not info or info.mog_house or player.status == 4 or now < follow_quiet_until then
+        follow_stop(true)
+        return
+    end
+    local party = windower.ffxi.get_party()
+    local worst = 'ok'
+    local flagged = {}
+    for index = 1, 5 do
+        local member = party and party['p' .. index]
+        local name = member and member.name or ('p' .. index)
+        local state = member_follow_state(member, info.zone, follow_distance, follow_flagged[name])
+        if state == 'lost' or state == 'far' then
+            flagged[name] = true
+            if state == 'lost' or worst == 'ok' then worst = state end
+        end
+    end
+    follow_flagged = flagged
+    if worst ~= follow_candidate then
+        follow_candidate, follow_candidate_since = worst, now
+    end
+    if follow_candidate ~= follow_state and now - follow_candidate_since >= FOLLOW_SETTLE then
+        if follow_candidate == 'ok' then
+            follow_stop(false)
+        else
+            follow_state = follow_candidate
+            emit(follow_cue(follow_state))
+            follow_next_refresh = now + FOLLOW_REFRESH
+            if verbose then chat('Follow: ' .. follow_state .. '.') end
+        end
+    elseif follow_state ~= 'ok' and now >= follow_next_refresh then
+        emit(follow_cue(follow_state))
+        follow_next_refresh = now + FOLLOW_REFRESH
+    end
+end
+
 local function reset()
     windows = {}
     chain_active = false
     casting = false
+    -- The helper's 'reset' clears every loop, follow included.
+    follow_state, follow_candidate, follow_flagged = 'ok', 'ok', {}
+    follow_quiet_until = os.clock() + FOLLOW_ZONE_GRACE
     emit('reset')
 end
 
@@ -278,13 +390,12 @@ windower.register_event('load', function()
     os.remove(folder .. 'ready.ack')
     starting = true
     await_helper(0)
-    -- Run after addon initialization, including when XB loads just before GR.
-    -- XIVCrossbar's test flag remains reset-on-reload; //grip slotpress on
-    -- resynchronizes it after any subsequent XB reload.
-    coroutine.schedule(sync_xivcrossbar_slotpress, 1.0)
+    -- Give party members a moment to appear before the follow watch judges.
+    follow_quiet_until = os.clock() + FOLLOW_ZONE_GRACE
 end)
 windower.register_event('unload', function()
     starting = false
+    follow_stop(true)
     emit('shutdown')
 end)
 windower.register_event('zone change', reset)
@@ -394,6 +505,7 @@ end)
 
 windower.register_event('prerender', function()
     local now = os.clock()
+    follow_poll(now)
     for id, window in pairs(windows) do
         if now >= window.expires then windows[id] = nil end
     end
@@ -410,16 +522,23 @@ windower.register_event('prerender', function()
     end
 end)
 
+local function follow_description()
+    if follow_distance == 0 then return 'OFF' end
+    return ('%d yalms (%s)'):format(follow_distance, follow_state)
+end
+
 local function show_status()
+    local slot = slot_override == nil and 'XB saved'
+        or ((slot_override and 'ON' or 'OFF') .. ' this load')
     chat(('v%s | Slot: %s | Reject: %s | TP thresholds: %s | Chain: %s')
-        :format(_addon.version, slotpress_enabled and 'ON' or 'OFF',
+        :format(_addon.version, slot,
             reject_enabled and 'ON' or 'OFF', tp_threshold_enabled and 'ON' or 'OFF', chain_mode))
     chat(('Critical: %s at %d%% HP | WS hits: %s | TP loop: %s | Verbose: %s')
         :format(critical_enabled and 'ON' or 'OFF', critical_threshold,
             weaponskill_hits and 'ON' or 'OFF', tp_loop and 'ON' or 'OFF',
             verbose and 'ON' or 'OFF'))
-    chat('Slot feedback needs XIVCrossbar slotrumble ON; ' .. string.color('//grip', 200)
-        .. string.color(' slotpress on', 207) .. ' re-syncs it.')
+    chat('Follow distance: ' .. follow_description() .. '. XIVCrossbar cues: '
+        .. string.color('//xb rumble', 200) .. ' shows which are on.')
 end
 
 local function show_help()
@@ -427,7 +546,11 @@ local function show_help()
     chat_raw(string.color('GripRumble', 167) .. ' - Commands')
     chat_command('help', 'Show this list of commands.')
     chat_command('status', 'Show current settings and version.')
-    chat_command('slotpress [on|off|test]', 'XB slot feedback (default ON); test plays the knock.')
+    chat_command('slotpress [on|off|test]', 'XB slot cue for this load only; test plays the knock.')
+    chat_command('triggerpull [on|off]', 'Save XB trigger cue on/off; bare previews it.')
+    chat_command('setswitch [on|off]', 'Save XB set-change cue on/off; bare previews it.')
+    chat_command('binding [on|off]', 'Save XB binding cue on/off; bare previews it.')
+    chat_command('distance [on|off|5-50|test|check]', 'Party follow rumble (saved; bare toggles).')
     chat_command('reject [on|off|test]', 'Failed-action buzzer (default OFF).')
     chat_command('tp [on|off]', 'TP threshold cues (default OFF).')
     chat_command('chain [steady|heartbeat|off]', 'Save skillchain feedback per character; 60 BPM heartbeat.')
@@ -439,8 +562,103 @@ local function show_help()
     chat_command('restart', 'Reload the GripRumble Lua addon.')
     chat_command('unload', 'Unload the GripRumble Lua addon.')
     chat_command('<cue>', 'Preview hello, cast, land, interrupt, stop, hit, partyhit,')
-    chat_raw('      pethit, autoattack, shutdown, setswitch, or binding.')
+    chat_raw('      pethit, autoattack, or shutdown.')
     chat_raw(string.color('--------------------------------------------------', 140))
+end
+
+-- XIVCrossbar cue names in its //xb rumble command, keyed by GripRumble cue.
+local xb_cues = {
+    triggerpull = {xb = 'trigger', label = 'Trigger pull'},
+    setswitch = {xb = 'set', label = 'Set change'},
+    binding = {xb = 'bind', label = 'Binding'},
+}
+
+-- //grip triggerpull|setswitch|binding [on|off|test]. Bare or test previews
+-- (setswitch and binding were bare previews before 0.1.22). on/off asks
+-- XIVCrossbar to save that cue for this character; nothing is sent at load,
+-- so several clients never write XIVCrossbar's settings at once.
+local function handle_xb_cue(cue, option)
+    local entry = xb_cues[cue]
+    if not option or option == 'test' then
+        emit(cue)
+        chat(entry.label .. ' preview sent.')
+    elseif option == 'on' or option == 'off' then
+        if send_xivcrossbar('rumble ' .. entry.xb .. ' ' .. option) then
+            chat(entry.label .. ' cue ' .. option:upper() .. ' requested from XIVCrossbar (saved there).')
+        else
+            chat('XIVCrossbar was not found beside GripRumble; nothing changed.')
+        end
+    else
+        chat_usage(cue .. ' [on|off|test]')
+    end
+end
+
+local function save_follow()
+    persistent.follow_distance = follow_distance
+    persistent.follow_last = follow_last
+    local saved, err = pcall(config.save, persistent)
+    return saved and ' Saved for this character.' or ' WARNING: could not save setting: ' .. tostring(err)
+end
+
+local function set_follow(distance)
+    if distance == 0 then
+        follow_stop(true)
+    else
+        follow_last = distance
+    end
+    follow_distance = distance
+    follow_next_poll = 0
+    local note = save_follow()
+    if distance == 0 then
+        chat('Follow distance rumble OFF.' .. note)
+    else
+        chat(('Follow distance rumble ON: soft past %d yalms, stronger when out of sight.'):format(distance) .. note)
+    end
+end
+
+-- //grip distance check: one line per party member, for tuning and for
+-- confirming in game how far Windower can still see someone.
+local function follow_check()
+    local info = windower.ffxi.get_info()
+    local party = windower.ffxi.get_party()
+    local any = false
+    for index = 1, 5 do
+        local member = party and party['p' .. index]
+        if member then
+            any = true
+            local state, yalms = member_follow_state(member, info and info.zone, follow_distance > 0 and follow_distance or follow_last, false)
+            local detail
+            if state == nil then
+                detail = 'other zone (not watched)'
+            elseif yalms then
+                detail = ('%.1f yalms - %s'):format(yalms, state)
+            else
+                detail = 'same zone, no position - lost'
+            end
+            chat(('%s: %s'):format(member.name or ('p' .. index), detail))
+        end
+    end
+    if not any then chat('No party members to watch.') end
+end
+
+local function handle_distance(option)
+    local yalms = tonumber(option)
+    if not option then
+        set_follow(follow_distance == 0 and follow_last or 0)
+    elseif option == 'on' then
+        set_follow(follow_last)
+    elseif option == 'off' or yalms == 0 then
+        set_follow(0)
+    elseif option == 'test' then
+        emit('follow_preview')
+        chat('Follow preview sent: far tug, out-of-sight knock, then all clear.')
+    elseif option == 'check' then
+        follow_check()
+    elseif valid_distance(yalms) then
+        set_follow(yalms)
+    else
+        chat_usage('distance [on|off|5-50|test|check]')
+    end
 end
 
 windower.register_event('addon command', function(cue, option)
@@ -451,14 +669,20 @@ windower.register_event('addon command', function(cue, option)
             emit('slotpress')
             chat('Slot-press knock preview sent.')
         elseif not option or option == 'on' or option == 'off' then
-            slotpress_enabled = option ~= 'off'
-            local xb_found = sync_xivcrossbar_slotpress()
-            chat('Slot-press rumble ' .. (slotpress_enabled and 'ON' or 'OFF') .. '.'
-                .. (xb_found and ' XIVCrossbar sync requested.'
-                    or ' XIVCrossbar test build was not found; load it separately.'))
+            -- XIVCrossbar's slotrumble is a this-load-only override; it is
+            -- never saved, and //xb rumble slot on|off clears it.
+            slot_override = option ~= 'off'
+            local xb_found = send_xivcrossbar('slotrumble ' .. (slot_override and 'on' or 'off'))
+            chat('Slot-press rumble ' .. (slot_override and 'ON' or 'OFF') .. ' for this load.'
+                .. (xb_found and ' Use //xb rumble slot on|off to save it.'
+                    or ' XIVCrossbar was not found beside GripRumble.'))
         else
             chat_usage('slotpress [on|off|test]')
         end
+    elseif xb_cues[cue] then
+        handle_xb_cue(cue, option)
+    elseif cue == 'distance' then
+        handle_distance(option)
     elseif cue == 'reject' then
         if option == 'test' then
             emit('reject')
@@ -538,7 +762,7 @@ windower.register_event('addon command', function(cue, option)
         verbose = not verbose
         chat(verbose and 'Diagnostics enabled.' or 'Diagnostics disabled.')
     elseif cue == 'hello' or cue == 'cast' or cue == 'land' or cue == 'stop'
-        or cue == 'interrupt' or cue == 'partyhit' or cue == 'hit' or cue == 'pethit' or cue == 'autoattack' or cue == 'shutdown' or cue == 'setswitch' or cue == 'binding' then
+        or cue == 'interrupt' or cue == 'partyhit' or cue == 'hit' or cue == 'pethit' or cue == 'autoattack' or cue == 'shutdown' then
         emit(cue)
     else
         chat('Unknown command: ' .. cue .. '.')

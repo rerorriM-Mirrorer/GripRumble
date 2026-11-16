@@ -51,6 +51,17 @@ PATTERNS["cx"] = ("Cast sweep", ramp(1800, 5500, 600) + [(lo // 4, hi // 4, ms) 
 HEARTBEAT_PATTERN = [(2500, 6500, 110), (0, 0, 170),
                      (2500, 6500, 140), (0, 0, 580)]
 
+# Party follow watch (0.1.22). The addon decides the state; these only say
+# how each state feels. "far" is one soft tug every 2 seconds; "lost" (same
+# zone, beyond the game's ~50-yalm sight range) is a firmer double knock
+# every 1.5 seconds. Both are deliberately unlike the 1-second chain
+# heartbeat. FOLLOW_TIMEOUT stops a follow loop the addon stopped refreshing
+# (for example if FFXI closed without unloading GripRumble).
+FOLLOW_FAR_PATTERN = [(3000, 9000, 80), (0, 0, 1920)]
+FOLLOW_LOST_PATTERN = [(12000, 18000, 90), (0, 0, 110),
+                       (12000, 18000, 90), (0, 0, 1210)]
+FOLLOW_TIMEOUT = 30
+
 EXTRA_CUES = {
     b'tp1000': [(3500, 14000, 45), (0, 0, 70), (5000, 20000, 55)],
     b'tp2000': [(4000, 13000, 40), (0, 0, 55), (6500, 19000, 40), (0, 0, 55), (14000, 25000, 75)],
@@ -66,6 +77,12 @@ EXTRA_CUES = {
     # Two low/rough pulses for a server-rejected action.
     b'reject': [(41000, 21000, 75), (0, 0, 60), (44000, 22000, 90)],
     b'binding': [(0, 12000, 35), (0, 0, 65), (3500, 15000, 45)],
+    # XIVCrossbar L2/R2 (or enabled L1/R1 bank) raising a bar: one short, soft
+    # low-motor detent. Lighter and shorter than slotpress, and on the other
+    # motor from the high-motor setswitch tick so the two stay distinct.
+    b'triggerpull': [(9000, 4000, 30)],
+    # Everyone back inside the follow distance: one soft fading tick.
+    b'follow_ok': [(0, 6000, 60), (0, 3000, 60)],
     b'autoattack': [(6500, 19000, 60)],
     b'pethit': [(65535, 65535, 200)],
 }
@@ -74,6 +91,10 @@ party_tap = EXTRA_CUES[b"autoattack"]
 EXTRA_CUES[b"partyhit"] = party_tap
 for count in range(1, 6):
     EXTRA_CUES[f"partyhit{count}".encode()] = (party_tap + [(0, 0, 90)]) * (count - 1) + party_tap
+# //grip distance test: one far tug, one lost double knock, then the all-clear.
+EXTRA_CUES[b"follow_preview"] = (FOLLOW_FAR_PATTERN[:1] + [(0, 0, 600)]
+                                 + FOLLOW_LOST_PATTERN[:3] + [(0, 0, 600)]
+                                 + EXTRA_CUES[b"follow_ok"])
 EXTRA_CUES[b"weaponskill_self"] = [
     (2800, 0, 95), (5200, 0, 80), (8800, 2000, 65),
     (14000, 5500, 50), (0, 0, 30), (58000, 49000, 75),
@@ -107,6 +128,7 @@ def run_bridge(pad):
     pending = b""
     active = []
     sustained = {}
+    refreshed = {}
     previous = (0, 0)
     refresh = 0
     greeting = [(2500, 6500, 810)]
@@ -121,14 +143,24 @@ def run_bridge(pad):
     }
     loops = {b"cast": [(*hum, 250)], b"chain_on": greeting,
              b"chain_heartbeat_on": HEARTBEAT_PATTERN,
-             b"tp_loop_on": PATTERNS["cx"][1][-3:]}
+             b"tp_loop_on": PATTERNS["cx"][1][-3:],
+             b"follow_far_on": FOLLOW_FAR_PATTERN,
+             b"follow_lost_on": FOLLOW_LOST_PATTERN}
+    follow_loops = (b"follow_far_on", b"follow_lost_on")
     stop_events = {b"land": b"cast", b"interrupt": b"cast", b"stop": b"cast",
-                   b"chain_off": (b"chain_on", b"chain_heartbeat_on"), b"tp_loop_off": b"tp_loop_on"}
+                   b"chain_off": (b"chain_on", b"chain_heartbeat_on"), b"tp_loop_off": b"tp_loop_on",
+                   b"follow_off": follow_loops}
     print("Ready. Load GripRumble on one Windower client. Ctrl+C stops.", flush=True)
     try:
         while True:
             pump()
             now = time.monotonic()
+            # If events.txt was replaced or emptied while the helper runs,
+            # start reading the new file from its beginning instead of
+            # waiting forever for it to grow past the old offset.
+            if path.stat().st_size < offset:
+                offset = 0
+                pending = b""
             with path.open("rb") as events:
                 events.seek(offset)
                 pending += events.read()
@@ -154,6 +186,17 @@ def run_bridge(pad):
                     sustained.pop(b'chain_heartbeat_on', None)
                 elif event == b'chain_heartbeat_on':
                     sustained.pop(b'chain_on', None)
+                if event in follow_loops:
+                    # The addon repeats the current follow state every few
+                    # seconds. A repeat only renews the timeout; it must not
+                    # restart the rhythm mid-beat.
+                    refreshed[event] = now
+                    for other in follow_loops:
+                        if other != event:
+                            sustained.pop(other, None)
+                    if event in sustained:
+                        print(event.decode(errors="replace"), flush=True)
+                        continue
                 if event in loops:
                     sustained[event] = now
                 if event.startswith(b'partyhits:'):
@@ -166,6 +209,9 @@ def run_bridge(pad):
 
             if b"cast" in sustained and now - sustained[b"cast"] >= 120:
                 del sustained[b"cast"]
+            for event in follow_loops:
+                if event in sustained and now - refreshed.get(event, 0) >= FOLLOW_TIMEOUT:
+                    del sustained[event]
             low = high = 0
             continuing = []
             for started, steps in active:
