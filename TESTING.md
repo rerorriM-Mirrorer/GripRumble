@@ -1,3 +1,15 @@
+## Current Development Status — 2026-11-20 (America/Chicago), 0.1.24 Test2: pet hits as party hits
+
+- **Repository / branch:** `rerorriM-Mirrorer/GripRumble` / `development/0.1.24-cast-land-switches`, on top of `bcfcc60` (0.1.24 Test1, cast/land switches).
+- **Installed base:** 0.1.23 Follow Tempo test (A, 2026-11-20); Test1 may or may not be installed, the Test2 ZIP covers both.
+- **Request:** Make rumbles for hits/damage to the player's pet match hits on other party members instead of hits to self.
+- **Change (Lua only):** Your pet's ID now goes into the same `partyhits:` list as party members, in target order, so it plays the party tap (`n`) or the critical-party tap (`c`, below the critical threshold) instead of `hit` / `criticalhit`. A pet that vanished after a fatal hit reads as a normal tap (Inferred: no HP to read). `report_damage` lost its pet argument. `bridge.py` and every waveform unchanged; the `pethit` preview cue still exists and is unchanged.
+- **Checks (Verified, host only):** `luatex --luaonly tests/mock_grip.lua .` PASS (self+pet+critical ally = `hit` + `partyhits:nc`; critical self+critical pet+normal ally = `criticalhit` + `partyhits:cn`; pet alone = `partyhits:n`); `python3 -I tests/check_helper.py` PASS; `git diff --check` PASS. No Windower, helper, DualSense or FFXI run.
+- **Live:** none for 0.1.24. 0.1.23 follow tempo and hush still Pending.
+- **Next live tests:** Test1 list below, plus: with a pet out, let it take hits: it should feel like a party member's tap, not your own big impact. With the pet under 25% HP: the critical-party tap. Self hits unchanged. A hit on you, your pet and a party member together: one self impact, then two taps.
+
+---
+
 ## Current Development Status — 2026-11-20 (America/Chicago), 0.1.24 cast/land switches
 
 - **Repository / branch:** `rerorriM-Mirrorer/GripRumble` / `development/0.1.24-cast-land-switches`, based on `development/0.1.23-follow-tempo` `1129f74` (0.1.23 code `4555757` plus today's docs sync).

@@ -197,14 +197,10 @@ end
 -- A short post-hit observation allows the client to apply a health update
 -- received alongside an action packet before choosing the critical pattern.
 -- Exact ordering still requires live Windower validation.
-local function report_damage(player, self_hit, pet_hit, party_ids)
+-- Since 0.1.24 your own pet is one of party_ids, so its hits use the
+-- party taps (critical tier included) instead of the self-hit impact.
+local function report_damage(player, self_hit, party_ids)
     if self_hit then emit(hit_is_critical(player.id, player) and 'criticalhit' or 'hit') end
-    if pet_hit then
-        local pet = windower.ffxi.get_mob_by_target('pet')
-        -- The pet can disappear after a fatal hit; still report the impact.
-        emit(pet and pet.id == pet_hit and hit_is_critical(pet_hit, player)
-            and 'criticalhit' or 'hit')
-    end
     if #party_ids > 0 then
         local pattern = {}
         for _, id in ipairs(party_ids) do
@@ -485,7 +481,7 @@ windower.register_event('action', function(action)
     else
         local actor = windower.ffxi.get_mob_by_id(action.actor_id)
         if not actor or actor.spawn_type ~= 16 then return end
-        local self_hit, pet_hit = false, nil
+        local self_hit = false
         local party_ids = {}
         local pet = windower.ffxi.get_mob_by_target('pet')
         local pet_target_id = pet and pet.id
@@ -501,9 +497,8 @@ windower.register_event('action', function(action)
                             if verbose then
                                 chat(('Incoming damage category %d, message %d.'):format(action.category, result.message))
                             end
-                        elseif is_pet then
-                            pet_hit = pet_target_id
                         else
+                            -- Party members and, since 0.1.24, your pet.
                             party_ids[#party_ids + 1] = target.id
                         end
                         break
@@ -511,12 +506,12 @@ windower.register_event('action', function(action)
                 end
             end
         end
-        if self_hit or pet_hit or #party_ids > 0 then
+        if self_hit or #party_ids > 0 then
             -- Capture IDs, not the mutable 'action' table.
             coroutine.schedule(function()
                 local current = windower.ffxi.get_player()
                 if current and current.id == player.id then
-                    report_damage(current, self_hit, pet_hit, party_ids)
+                    report_damage(current, self_hit, party_ids)
                 end
             end, 0.08)
         end

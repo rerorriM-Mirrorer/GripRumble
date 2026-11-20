@@ -224,7 +224,7 @@ registered['prerender']()
 pet_id=9
 registered['prerender']()
 eq(cues(),before,'no summon/dismiss cue')
--- Damage: own normal, pet normal, party critical; no duplicate pet as party member.
+-- Damage: own normal; pet joins the party taps (0.1.24) in target order.
 party_member.hpp=20
 registered['action']({actor_id=500,category=1,param=1,targets={
     {id=7,actions={{message=1,param=100}}},
@@ -232,8 +232,8 @@ registered['action']({actor_id=500,category=1,param=1,targets={
     {id=8,actions={{message=1,param=100}}},
 }})
 drain_delayed_damage()
-eq(count(cues(),'hit'),2,'own and pet match')
-eq(count(cues(),'partyhits:c'),1,'critical ally gets self-strength hit')
+eq(count(cues(),'hit'),1,'own hit only; pet no longer uses the self hit')
+eq(count(cues(),'partyhits:nc'),1,'pet normal tap, critical ally tap')
 -- Crit severity is evaluated after the short health-update delay.
 registered['action']({actor_id=500,category=1,param=1,targets={
     {id=7,actions={{message=1,param=100}}},
@@ -244,18 +244,22 @@ me.vitals.hpp=20
 mobs[9].hpp=20
 party_member.hpp=75
 drain_delayed_damage()
-eq(count(cues(),'criticalhit'),2,'critical self and pet')
-eq(count(cues(),'partyhits:n'),1,'normal ally')
+eq(count(cues(),'criticalhit'),1,'critical self only')
+eq(count(cues(),'partyhits:cn'),1,'critical pet uses the critical party tap, normal ally')
+registered['action']({actor_id=500,category=1,param=1,targets={{id=9,actions={{message=1,param=100}}}}})
+mobs[9].hpp=80
+drain_delayed_damage()
+eq(count(cues(),'partyhits:n'),1,'pet-only hit is one party tap')
 registered['addon command']('critical','off')
 registered['action']({actor_id=500,category=1,param=1,targets={{id=7,actions={{message=1,param=100}}}}})
 drain_delayed_damage()
-eq(count(cues(),'hit'),3,'critical off uses normal self hit')
+eq(count(cues(),'hit'),2,'critical off uses normal self hit')
 registered['addon command']('critical','25')
 assert(chats[#chats]:find('25%% HP'), 'set threshold command')
 registered['addon command']('critical','test')
-eq(count(cues(),'criticalhit'),3,'critical manual self preview')
+eq(count(cues(),'criticalhit'),2,'critical manual self preview')
 registered['addon command']('critical','partytest')
-eq(count(cues(),'partyhits:c'),2,'critical party preview')
+eq(count(cues(),'partyhits:c'),1,'critical party preview')
 -- Simulate a full Lua reload after changing the mode. Only the saved chain
 -- mode survives; other per-load defaults are deliberately unchanged.
 registered['addon command']('chain','off')
@@ -410,5 +414,5 @@ assert(chats[#chats]:find('Follow distance: 25 yalms',1,true), 'distance survive
 assert(chats[#chats-2]:find('Slot: XB saved',1,true), 'slot override is per load')
 registered['addon command']('help')
 assert(table.concat(chats,'\n'):find('<color:207> distance [on|off|5-50|test|check]</color>',1,true), 'distance help')
-print('PASS simulated GripRumble: reload persistence, cast/land switches, no XB load sync, XB cue forwarding, follow distance and hush, reject, TP toggle, skillchain rhythm, pet damage, critical self/party')
+print('PASS simulated GripRumble: reload persistence, cast/land switches, pet as party hit, no XB load sync, XB cue forwarding, follow distance and hush, reject, TP toggle, skillchain rhythm, pet damage, critical self/party')
 os.remove(root .. '/events.txt')
