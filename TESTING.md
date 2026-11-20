@@ -1,3 +1,9 @@
+## Current Development Status — 2026-11-20 (America/Chicago)
+
+- Docs sync to canon 2026-11-20.1 (`agents_shared_version` and `workflow_version`); project-specific lines moved to the AGENTS REPO block: project rules (2 bullets), prototype note, XIVCrossbar companion note; no runtime change, no FFXI test.
+
+---
+
 # GripRumble TESTING.md
 
 ## Current Development Status - November 16, 2026 (America/Chicago)
