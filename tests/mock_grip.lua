@@ -4,17 +4,22 @@ local root = assert(arg[1], 'addon directory required')
 package.path = root .. '/?.lua;' .. package.path
 local saved_chain_mode, save_count = nil, 0
 local saved_follow, saved_follow_last = nil, nil
+local saved_cast, saved_land = nil, nil
 package.preload['config'] = function()
     return {
         load = function(defaults)
             -- Windower config returns XML text; strings check the number parsing.
             return {chain_mode = saved_chain_mode or defaults.chain_mode,
                 follow_distance = saved_follow and tostring(saved_follow) or defaults.follow_distance,
-                follow_last = saved_follow_last and tostring(saved_follow_last) or defaults.follow_last}
+                follow_last = saved_follow_last and tostring(saved_follow_last) or defaults.follow_last,
+                -- XML round trip: saved booleans come back as strings.
+                cast_rumble = saved_cast == nil and defaults.cast_rumble or tostring(saved_cast),
+                land_rumble = saved_land == nil and defaults.land_rumble or tostring(saved_land)}
         end,
         save = function(values)
             saved_chain_mode = values.chain_mode
             saved_follow, saved_follow_last = values.follow_distance, values.follow_last
+            saved_cast, saved_land = values.cast_rumble, values.land_rumble
             save_count = save_count + 1
         end,
     }
@@ -154,6 +159,40 @@ registered['action']({actor_id=7,category=8,param=28787,targets={}})
 eq(count(cues(),'interrupt'),1,'casting interruption preserved')
 registered['action']({actor_id=8,category=8,param=24931,targets={}})
 eq(count(cues(),'cast'),2,'another party member casting does not make a local cast cue')
+-- 0.1.24: //grip cast|land on|off, saved per character, default ON.
+registered['addon command']('cast','off')
+eq(saved_cast,false,'cast off saved')
+local cast_n, land_n, stop_n = count(cues(),'cast'), count(cues(),'land'), count(cues(),'stop')
+registered['action']({actor_id=7,category=8,param=24931,targets={}})
+eq(count(cues(),'cast'),cast_n,'cast off: no casting hum')
+registered['action']({actor_id=7,category=4,param=1,targets={{id=7,actions={{message=309,param=0}}}}})
+eq(count(cues(),'land'),land_n+1,'cast off: landed pulse still plays')
+registered['addon command']('land','off')
+eq(saved_land,false,'land off saved')
+registered['action']({actor_id=7,category=8,param=24931,targets={}})
+registered['action']({actor_id=7,category=4,param=1,targets={{id=7,actions={{message=309,param=0}}}}})
+eq(count(cues(),'land'),land_n+1,'land off: no landed pulse')
+eq(count(cues(),'stop'),stop_n+1,'land off: silent stop still ends the cast')
+registered['action']({actor_id=7,category=8,param=24931,targets={}})
+registered['action']({actor_id=7,category=8,param=28787,targets={}})
+eq(count(cues(),'interrupt'),2,'interrupt unaffected by cast/land switches')
+registered['addon command']('cast')
+eq(count(cues(),'cast'),cast_n+1,'bare cast still previews')
+registered['addon command']('land','test')
+eq(count(cues(),'land'),land_n+2,'land test previews')
+registered['addon command']('cast','bogus')
+assert(chats[#chats]:find('cast [on|off|test]',1,true), 'cast usage')
+assert(loadfile(root .. '/GripRumble.lua'))()
+registered['addon command']('status')
+assert(chats[#chats-1]:find('Cast: OFF | Land: OFF',1,true), 'cast/land survive reload')
+registered['addon command']('cast','on')
+registered['addon command']('land','on')
+eq(saved_cast,true,'cast on saved')
+cast_n, land_n = count(cues(),'cast'), count(cues(),'land')
+registered['action']({actor_id=7,category=8,param=24931,targets={}})
+registered['action']({actor_id=7,category=4,param=1,targets={{id=7,actions={{message=309,param=0}}}}})
+eq(count(cues(),'cast'),cast_n+1,'cast back on')
+eq(count(cues(),'land'),land_n+1,'land back on')
 -- Valaineral landed Uriel Blade estimate starts after initial delay.
 times=200
 registered['action']({actor_id=8,category=13,param=2273,targets={{id=99,actions={{message=1,param=200}}}}})
@@ -371,5 +410,5 @@ assert(chats[#chats]:find('Follow distance: 25 yalms',1,true), 'distance survive
 assert(chats[#chats-2]:find('Slot: XB saved',1,true), 'slot override is per load')
 registered['addon command']('help')
 assert(table.concat(chats,'\n'):find('<color:207> distance [on|off|5-50|test|check]</color>',1,true), 'distance help')
-print('PASS simulated GripRumble: reload persistence, no XB load sync, XB cue forwarding, follow distance and hush, reject, TP toggle, skillchain rhythm, pet damage, critical self/party')
+print('PASS simulated GripRumble: reload persistence, cast/land switches, no XB load sync, XB cue forwarding, follow distance and hush, reject, TP toggle, skillchain rhythm, pet damage, critical self/party')
 os.remove(root .. '/events.txt')

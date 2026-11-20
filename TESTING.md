@@ -1,3 +1,21 @@
+## Current Development Status — 2026-11-20 (America/Chicago), 0.1.24 cast/land switches
+
+- **Repository / branch:** `rerorriM-Mirrorer/GripRumble` / `development/0.1.24-cast-land-switches`, based on `development/0.1.23-follow-tempo` `1129f74` (0.1.23 code `4555757` plus today's docs sync).
+- **Installed base:** A reports the 0.1.23 Follow Tempo test is installed (A, 2026-11-20).
+- **Request:** A setting or command to disable the rumble during casting and when a spell lands; add them if missing. Verified: none existed; `cast` and `land` were always emitted for your own spells.
+- **Change (0.1.24, Lua only):** `//grip cast [on|off|test]` and `//grip land [on|off|test]`, saved per character via `config` (`cast_rumble`, `land_rumble`, default ON so behavior is unchanged until switched). Cast off: no `cast` cue, casting is still tracked. Land off: the silent `stop` is sent instead of `land`, so any hum still ends. Turning cast off mid-cast sends `stop`. Interrupt, `burst` (magic burst), damage and all other cues untouched. `//grip status` line 2 starts `Cast: ON | Land: ON`. Bare `//grip cast` preview now auto-stops after 1.5 s (was: hummed until the helper's 120 s cap). `cast`/`land` removed from the generic `<cue>` help line since they have their own entries. `bridge.py` and every waveform unchanged.
+- **Checks (Verified, host only):** `luatex --luaonly tests/mock_grip.lua .` PASS (LuaTeX Lua 5.4 mock, not Windower Lua 5.1; new cases: cast off, land off, stop still sent, interrupt unaffected, previews, usage, reload persistence from XML strings, back on); `python3 -I tests/check_helper.py` PASS; `python3 -m py_compile bridge.py launch_hidden.py` PASS; `git diff --check` PASS. No Lua 5.1 `luac` on this host. No Windower, helper, DualSense or FFXI run.
+- **Live:** none for 0.1.24. 0.1.23 follow tempo and hush still Pending.
+- **Next live tests:**
+  1. Install over `addons/GripRumble/` (helper restart not needed: `bridge.py` unchanged), `//lua r GripRumble`, `//grip status`: line 2 starts `Cast: ON | Land: ON`.
+  2. `//grip cast off`, cast a spell: no hum while casting; the landed pulse still plays.
+  3. `//grip land off`, cast again: no hum and no landed pulse; nothing left humming afterward.
+  4. Interrupt a spell (move while casting): interrupt buzz still plays. A magic burst still gives the burst rumble.
+  5. `//lua r GripRumble`, `//grip status`: both still OFF. `//grip cast on`, `//grip land on`: normal casting feel is back.
+  6. `//grip cast` and `//grip land` (bare) preview each once; the cast hum stops by itself.
+
+---
+
 ## Current Development Status — 2026-11-20 (America/Chicago)
 
 - Docs sync to canon 2026-11-20.1 (`agents_shared_version` and `workflow_version`); project-specific lines moved to the AGENTS REPO block: project rules (2 bullets), prototype note, XIVCrossbar companion note; no runtime change, no FFXI test.

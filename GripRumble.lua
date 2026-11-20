@@ -1,5 +1,5 @@
 _addon.name = 'GripRumble'
-_addon.version = '0.1.23'
+_addon.version = '0.1.24'
 _addon.commands = {'griprumble', 'grip'}
 
 local config = require('config')
@@ -11,7 +11,10 @@ require('chat')
 -- follow_distance 0 means the follow watch is off; follow_last remembers the
 -- distance that a bare //grip distance or //grip distance on turns back on.
 local FOLLOW_MIN, FOLLOW_MAX, FOLLOW_DEFAULT = 5, 50, 30
-local persistent_defaults = {chain_mode = 'steady', follow_distance = 0, follow_last = FOLLOW_DEFAULT}
+-- cast_rumble / land_rumble (0.1.24): your own casting hum and spell-landed
+-- pulse, both ON by default so the known-good behavior is unchanged.
+local persistent_defaults = {chain_mode = 'steady', follow_distance = 0, follow_last = FOLLOW_DEFAULT,
+    cast_rumble = true, land_rumble = true}
 local persistent = config.load(persistent_defaults)
 local chain_mode = (persistent.chain_mode == 'off'
     or persistent.chain_mode == 'heartbeat'
@@ -27,6 +30,12 @@ local function valid_distance(value)
 end
 local follow_distance = valid_distance(persistent.follow_distance) or 0
 local follow_last = valid_distance(persistent.follow_last) or FOLLOW_DEFAULT
+-- XML may hand back booleans or the strings 'true'/'false'.
+local function saved_flag(value)
+    return not (value == false or value == 'false')
+end
+local cast_rumble = saved_flag(persistent.cast_rumble)
+local land_rumble = saved_flag(persistent.land_rumble)
 
 local verbose = false
 -- Per-load settings. XIVCrossbar now saves its own slot cue setting, so
@@ -442,7 +451,9 @@ windower.register_event('action', function(action)
                 emit('interrupt')
             elseif action.param == 24931 then
                 casting = true
-                emit('cast')
+                -- casting stays tracked when the hum is off, so a later
+                -- 'stop' still clears any hum a preview may have started.
+                if cast_rumble then emit('cast') end
             end
         elseif action.category == 4 then
             casting = false
@@ -468,7 +479,8 @@ windower.register_event('action', function(action)
                     end
                 end
             end
-            emit(landed and 'land' or 'stop')
+            -- With the landed pulse off, the silent 'stop' still ends the hum.
+            emit((landed and land_rumble) and 'land' or 'stop')
         end
     else
         local actor = windower.ffxi.get_mob_by_id(action.actor_id)
@@ -549,8 +561,9 @@ local function show_status()
     chat(('v%s | Slot: %s | Reject: %s | TP thresholds: %s | Chain: %s')
         :format(_addon.version, slot,
             reject_enabled and 'ON' or 'OFF', tp_threshold_enabled and 'ON' or 'OFF', chain_mode))
-    chat(('Critical: %s at %d%% HP | WS hits: %s | TP loop: %s | Verbose: %s')
-        :format(critical_enabled and 'ON' or 'OFF', critical_threshold,
+    chat(('Cast: %s | Land: %s | Critical: %s at %d%% HP | WS hits: %s | TP loop: %s | Verbose: %s')
+        :format(cast_rumble and 'ON' or 'OFF', land_rumble and 'ON' or 'OFF',
+            critical_enabled and 'ON' or 'OFF', critical_threshold,
             weaponskill_hits and 'ON' or 'OFF', tp_loop and 'ON' or 'OFF',
             verbose and 'ON' or 'OFF'))
     chat('Follow distance: ' .. follow_description() .. '. XIVCrossbar cues: '
@@ -568,6 +581,8 @@ local function show_help()
     chat_command('binding [on|off]', 'Save XB binding cue on/off; bare previews it.')
     chat_command('distance [on|off|5-50|test|check]', 'Party follow rumble (saved; bare toggles).')
     chat_command('hush', 'Silence follow rumble until everyone is back in range.')
+    chat_command('cast [on|off|test]', 'Casting hum (saved; default ON); bare previews it.')
+    chat_command('land [on|off|test]', 'Spell-landed pulse (saved; default ON); bare previews it.')
     chat_command('reject [on|off|test]', 'Failed-action buzzer (default OFF).')
     chat_command('tp [on|off]', 'TP threshold cues (default OFF).')
     chat_command('chain [steady|heartbeat|off]', 'Save skillchain feedback per character; 60 BPM heartbeat.')
@@ -578,7 +593,7 @@ local function show_help()
     chat_command('wsrev', 'Preview the weaponskill impact.')
     chat_command('restart', 'Reload the GripRumble Lua addon.')
     chat_command('unload', 'Unload the GripRumble Lua addon.')
-    chat_command('<cue>', 'Preview hello, cast, land, interrupt, stop, hit, partyhit,')
+    chat_command('<cue>', 'Preview hello, interrupt, stop, hit, partyhit,')
     chat_raw('      pethit, autoattack, or shutdown.')
     chat_raw(string.color('--------------------------------------------------', 140))
 end
@@ -605,6 +620,39 @@ local function handle_xb_cue(cue, option)
         else
             chat('XIVCrossbar was not found beside GripRumble; nothing changed.')
         end
+    else
+        chat_usage(cue .. ' [on|off|test]')
+    end
+end
+
+-- //grip cast|land [on|off|test]. Bare or test previews, as before 0.1.24.
+local spell_switches = {
+    cast = {key = 'cast_rumble', label = 'Casting hum'},
+    land = {key = 'land_rumble', label = 'Spell-landed pulse'},
+}
+
+local function handle_spell_switch(cue, option)
+    local entry = spell_switches[cue]
+    if not option or option == 'test' then
+        emit(cue)
+        if cue == 'cast' then
+            -- The hum is a loop; end the preview after a moment.
+            coroutine.schedule(function() if not casting then emit('stop') end end, 1.5)
+        end
+        chat(entry.label .. ' preview sent.')
+    elseif option == 'on' or option == 'off' then
+        local enabled = option == 'on'
+        if entry.key == 'cast_rumble' then
+            cast_rumble = enabled
+            if not enabled and casting then emit('stop') end
+        else
+            land_rumble = enabled
+        end
+        persistent[entry.key] = enabled
+        local saved, err = pcall(config.save, persistent)
+        chat(entry.label .. ' rumble ' .. option:upper() .. '.'
+            .. (saved and ' Saved for this character.'
+                or ' WARNING: could not save setting: ' .. tostring(err)))
     else
         chat_usage(cue .. ' [on|off|test]')
     end
@@ -716,6 +764,8 @@ windower.register_event('addon command', function(cue, option)
         end
     elseif xb_cues[cue] then
         handle_xb_cue(cue, option)
+    elseif spell_switches[cue] then
+        handle_spell_switch(cue, option)
     elseif cue == 'distance' then
         handle_distance(option)
     elseif cue == 'hush' then
@@ -798,7 +848,7 @@ windower.register_event('addon command', function(cue, option)
     elseif cue == 'verbose' then
         verbose = not verbose
         chat(verbose and 'Diagnostics enabled.' or 'Diagnostics disabled.')
-    elseif cue == 'hello' or cue == 'cast' or cue == 'land' or cue == 'stop'
+    elseif cue == 'hello' or cue == 'stop'
         or cue == 'interrupt' or cue == 'partyhit' or cue == 'hit' or cue == 'pethit' or cue == 'autoattack' or cue == 'shutdown' then
         emit(cue)
     else
