@@ -1,5 +1,5 @@
 _addon.name = 'GripRumble'
-_addon.version = '0.1.24'
+_addon.version = '0.1.25'
 _addon.commands = {'griprumble', 'grip'}
 
 local config = require('config')
@@ -278,12 +278,19 @@ local FOLLOW_SETTLE = 1.5       -- seconds a far/lost state must hold before it 
 local FOLLOW_CLEAR_SETTLE = 0.5 -- seconds 'everyone back' must hold (0.1.23: clears within 1 s)
 local FOLLOW_REFRESH = 10       -- re-send an active state so the helper keeps it
 local FOLLOW_ZONE_GRACE = 10    -- seconds after zoning while everyone loads in
+local FOLLOW_ARRIVAL_GRACE = 8  -- seconds a member who just zoned in may lack a position
 local FOLLOW_POLL = 0.25
 local follow_state = 'ok'       -- what is currently rumbling: ok, far or lost
 local follow_candidate, follow_candidate_since = 'ok', 0
 local follow_flagged = {}       -- member name -> true while beyond the distance
 local follow_next_poll, follow_next_refresh = 0, 0
 local follow_quiet_until = 0
+-- A member who zones into your zone shows your zone in the party list a
+-- moment before their position arrives, which would read as 'lost'. Each
+-- member's last seen zone is kept; when it changes to yours they get a
+-- short grace that ends early as soon as a live position shows up.
+local follow_member_zone = {}   -- member name -> zone last seen in the party list
+local follow_arrived = {}       -- member name -> os.clock() when they entered your zone
 -- //grip hush silences the current level until everyone is back in range.
 -- It holds the rank that was rumbling: hushing 'far' still lets 'lost'
 -- through, hushing 'lost' silences both. 0 means nothing is hushed.
@@ -304,6 +311,45 @@ local function member_follow_state(member, zone, threshold, was_flagged)
     local limit = was_flagged and threshold - FOLLOW_HYSTERESIS or threshold
     if yalms > limit then return 'far', yalms end
     return 'ok', yalms
+end
+
+-- Note zone arrivals. Runs on every poll, even during quiet periods, so a
+-- member who zones in with you is not treated as a fresh arrival later.
+local function follow_track_arrivals(party, zone, now)
+    local seen = {}
+    for index = 1, 5 do
+        local member = party and party['p' .. index]
+        local name = member and member.name
+        if name then
+            seen[name] = true
+            local before = follow_member_zone[name]
+            if member.zone == zone and before ~= zone then
+                follow_arrived[name] = now
+            elseif member.zone ~= zone then
+                follow_arrived[name] = nil
+            end
+            follow_member_zone[name] = member.zone
+        end
+    end
+    for name in pairs(follow_member_zone) do
+        if not seen[name] then
+            follow_member_zone[name], follow_arrived[name] = nil, nil
+        end
+    end
+end
+
+-- True while a freshly arrived member has no live position yet.
+local function follow_arriving(name, member, now)
+    local since = follow_arrived[name]
+    if not since then return false end
+    local mob = member and member.mob
+    local live = mob and type(mob.distance) == 'number'
+        and math.sqrt(mob.distance) < FOLLOW_LOST_YALMS
+    if live or now - since >= FOLLOW_ARRIVAL_GRACE then
+        follow_arrived[name] = nil
+        return false
+    end
+    return true
 end
 
 local function follow_cue(state)
@@ -330,18 +376,22 @@ local function follow_poll(now)
     follow_next_poll = now + FOLLOW_POLL
     local player = windower.ffxi.get_player()
     local info = windower.ffxi.get_info()
+    local party = windower.ffxi.get_party()
+    if info then follow_track_arrivals(party, info.zone, now) end
     -- Status 4 is an event or cutscene; members are often hidden then.
     if not player or not info or info.mog_house or player.status == 4 or now < follow_quiet_until then
         follow_stop(true)
         return
     end
-    local party = windower.ffxi.get_party()
     local worst = 'ok'
     local flagged = {}
     for index = 1, 5 do
         local member = party and party['p' .. index]
         local name = member and member.name or ('p' .. index)
+        -- Checked every poll so a live position ends the grace at once.
+        local arriving = member and member.name and follow_arriving(name, member, now)
         local state = member_follow_state(member, info.zone, follow_distance, follow_flagged[name])
+        if state == 'lost' and arriving then state = 'ok' end
         if state == 'lost' or state == 'far' then
             flagged[name] = true
             if state == 'lost' or worst == 'ok' then worst = state end

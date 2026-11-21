@@ -349,9 +349,25 @@ eq(count(cues(),'follow_ok'),1,'all-clear tick')
 party_member.zone, party_member.mob = 231, nil
 step(4)
 eq(count(cues(),'follow_lost_on'),1,'other zone is not watched')
+-- 0.1.25: a member who just zoned in gets a grace before 'lost'.
 party_member.zone = 230
 step(2)
-eq(count(cues(),'follow_lost_on'),2,'same zone again, no position: lost')
+eq(count(cues(),'follow_lost_on'),1,'0.1.25: fresh arrival without a position is not lost yet')
+step(8)
+eq(count(cues(),'follow_lost_on'),2,'0.1.25: still no position after the 8 s grace: lost')
+party_member.mob = mob_at(5)
+step(1)
+party_member.zone, party_member.mob = 231, nil
+step(2)
+party_member.zone = 230
+step(2)
+local arrive_lost = count(cues(),'follow_lost_on')
+party_member.mob = mob_at(5)
+step(1)
+party_member.mob = nil
+step(2)
+eq(count(cues(),'follow_lost_on'),arrive_lost+1,'0.1.25: grace ends as soon as a live position shows')
+local off_before_zone, ok_before_zone = count(cues(),'follow_off'), count(cues(),'follow_ok')
 registered['zone change']()
 local lost_before = count(cues(),'follow_lost_on')
 step(9)
@@ -360,8 +376,8 @@ step(3)
 eq(count(cues(),'follow_lost_on'),lost_before+1,'judges again after grace')
 me.status = 4
 step(1)
-eq(count(cues(),'follow_off'),2,'cutscene stops follow quietly')
-eq(count(cues(),'follow_ok'),1,'no all-clear for a cutscene')
+eq(count(cues(),'follow_off'),off_before_zone+1,'cutscene stops follow quietly')
+eq(count(cues(),'follow_ok'),ok_before_zone,'no all-clear for a cutscene')
 me.status = 0
 step(2)
 registered['addon command']('distance','check')
@@ -414,5 +430,5 @@ assert(chats[#chats]:find('Follow distance: 25 yalms',1,true), 'distance survive
 assert(chats[#chats-2]:find('Slot: XB saved',1,true), 'slot override is per load')
 registered['addon command']('help')
 assert(table.concat(chats,'\n'):find('<color:207> distance [on|off|5-50|test|check]</color>',1,true), 'distance help')
-print('PASS simulated GripRumble: reload persistence, cast/land switches, pet as party hit, no XB load sync, XB cue forwarding, follow distance and hush, reject, TP toggle, skillchain rhythm, pet damage, critical self/party')
+print('PASS simulated GripRumble: reload persistence, cast/land switches, pet as party hit, no XB load sync, XB cue forwarding, follow distance, arrival grace and hush, reject, TP toggle, skillchain rhythm, pet damage, critical self/party')
 os.remove(root .. '/events.txt')

@@ -1,3 +1,14 @@
+## Current Development Status — 2026-11-20 (America/Chicago), 0.1.25 Test1: arrival grace for follow watch
+
+- **Repository / branch:** `rerorriM-Mirrorer/GripRumble` / `development/0.1.25-arrival-grace`, on top of `812f6d5` (0.1.24 Test2).
+- **Installed base:** 0.1.24 Test2 per the 2026-11-20 project handoff (Inferred; not re-confirmed by A). The ZIP holds every file changed since `main` (0.1.22 plus the docs sync), so it covers 0.1.23 and 0.1.24 installs too.
+- **Request:** When party members zone into your zone, GripRumble plays a few out-of-sight (lost) knocks before their position arrives. Ignore just-arrived members briefly.
+- **Cause (Verified in source):** the 10 s quiet covers only your own zoning/load. A member whose party-list zone already equals yours but who has no `mob` entry yet reads as `lost`, and the 1.5 s settle is shorter than that gap. That the gap is what A felt is Inferred.
+- **Change (Lua only):** each poll records every member's last seen zone, during quiet periods too. When it changes to your zone, that member gets up to 8 s (`FOLLOW_ARRIVAL_GRACE`) in which `lost` counts as ok. The grace ends at once when a live position (<49.5 yalms) appears. Leaving your zone clears it. `far` with a live position is unaffected. Version 0.1.25. `bridge.py` and waveforms unchanged.
+- **Checks (Verified, host only):** `texluac -p GripRumble.lua tests/mock_grip.lua` OK (LuaTeX luac, not 5.1); `luatex --luaonly tests/mock_grip.lua .` PASS, with new cases: fresh arrival with no position is quiet after 2 s, lost after the grace; grace ends early once a position shows. The old "same zone again, no position: lost after 2 s" case was replaced (it described the behavior being changed). Cutscene off/ok checks made relative. `python3 -I tests/check_helper.py` PASS; `git diff --check` PASS. The mock run first caught a bug (the early end ran only on `lost` polls), which was fixed before commit.
+- **Live:** none for 0.1.25. 0.1.24 Test2 and 0.1.23 follow tempo/hush still Pending.
+- **Next live tests:** with distance on, zone first and let the others follow: no lost knocks as they arrive. Leave one character behind in the old zone: nothing (other zone, unchanged). Zone one in and park them out of draw range at once: lost knocks within about 10 s. Normal walk-away far/lost and the all-clear unchanged.
+
 ## Current Development Status — 2026-11-20 (America/Chicago), 0.1.24 Test2: pet hits as party hits
 
 - **Repository / branch:** `rerorriM-Mirrorer/GripRumble` / `development/0.1.24-cast-land-switches`, on top of `bcfcc60` (0.1.24 Test1, cast/land switches).
